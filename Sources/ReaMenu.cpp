@@ -2,6 +2,7 @@
 #define REAPERAPI_WANT_GetResourcePath
 #define REAPERAPI_WANT_AddCustomizableMenu
 #define REAPERAPI_WANT_MIDIEditor_GetActive
+#define REAPERAPI_WANT_SectionFromUniqueID
 #define REAPERAPI_WANT_NamedCommandLookup
 #define REAPERAPI_IMPLEMENT
 
@@ -16,6 +17,7 @@
 #include <fstream>
 #include <cstdlib>
 #include <cerrno>
+#include <cctype>
 
 // Link with MSXML 6.0
 #pragma comment(lib, "msxml6.lib")
@@ -73,6 +75,9 @@ struct InstalledMidiMenu
 
 static std::vector<InstalledMidiMenu> g_installedMidiMenus;
 static bool g_timerRegistered = false;
+static FILETIME g_menuIniWriteTime = {};
+static bool g_menuIniExists = false;
+static bool g_menuIniTimeInitialized = false;
 
 
 // ============================================================
@@ -1277,6 +1282,279 @@ static void PopulateMenu(
 }
 
 
+static std::string Trim(
+    const std::string& value)
+{
+    size_t first = 0;
+
+    while (first < value.size() &&
+           std::isspace(
+               static_cast<unsigned char>(
+                   value[first]
+               )))
+    {
+        ++first;
+    }
+
+    size_t last = value.size();
+
+    while (last > first &&
+           std::isspace(
+               static_cast<unsigned char>(
+                   value[last - 1]
+               )))
+    {
+        --last;
+    }
+
+    return value.substr(first, last - first);
+}
+
+
+static std::string GetMenuIniPath()
+{
+    const char* resourcePath =
+        GetResourcePath();
+
+    if (!resourcePath)
+        return std::string();
+
+    return std::string(resourcePath) +
+        "\\reaper-menu.ini";
+}
+
+
+static bool ReadCustomizedMenuItems(
+    const std::string& sectionName,
+    std::vector<MenuItem>& items)
+{
+    items.clear();
+
+    std::string path =
+        GetMenuIniPath();
+
+    if (path.empty())
+        return false;
+
+    std::ifstream file(path);
+
+    if (!file)
+        return false;
+
+    bool inSection = false;
+    bool sectionFound = false;
+    std::vector<std::vector<MenuItem>*> stack;
+    stack.push_back(&items);
+
+    std::string line;
+
+    while (std::getline(file, line))
+    {
+        line = Trim(line);
+
+        if (line.empty())
+            continue;
+
+        if (line.front() == '[' &&
+            line.back() == ']')
+        {
+            std::string currentSection =
+                line.substr(
+                    1,
+                    line.size() - 2
+                );
+
+            inSection =
+                _stricmp(
+                    currentSection.c_str(),
+                    sectionName.c_str()
+                ) == 0;
+
+            if (inSection)
+            {
+                sectionFound = true;
+                stack.clear();
+                stack.push_back(&items);
+            }
+
+            continue;
+        }
+
+        if (!inSection ||
+            line.rfind("item_", 0) != 0)
+        {
+            continue;
+        }
+
+        size_t equals = line.find('=');
+
+        if (equals == std::string::npos)
+            continue;
+
+        std::string value =
+            Trim(line.substr(equals + 1));
+
+        if (value == "-1")
+        {
+            MenuItem separator;
+            separator.type = MenuItem::SEPARATOR;
+            stack.back()->push_back(separator);
+            continue;
+        }
+
+        if (value == "-3")
+        {
+            if (stack.size() > 1)
+                stack.pop_back();
+
+            continue;
+        }
+
+        if (value.rfind("-2", 0) == 0 &&
+            (value.size() == 2 ||
+             std::isspace(
+                 static_cast<unsigned char>(
+                     value[2]
+                 ))))
+        {
+            std::string submenuName =
+                Trim(value.substr(2));
+
+            if (submenuName.empty())
+                continue;
+
+            MenuItem submenu;
+            submenu.type = MenuItem::SUBMENU;
+            submenu.name = submenuName;
+            stack.back()->push_back(submenu);
+            stack.push_back(
+                &stack.back()->back().children
+            );
+
+            continue;
+        }
+
+        size_t separator =
+            value.find_first_of(" \t");
+
+        std::string command =
+            separator == std::string::npos
+            ? value
+            : value.substr(0, separator);
+
+        std::string displayName =
+            separator == std::string::npos
+            ? std::string()
+            : Trim(value.substr(separator + 1));
+
+        if (command.empty())
+            continue;
+
+        MenuItem action;
+        action.type = MenuItem::ACTION;
+        action.command = command;
+        action.name = displayName;
+        stack.back()->push_back(action);
+    }
+
+    return sectionFound;
+}
+
+
+static bool LoadCustomizedItems(
+    const MainMenu& mainMenu,
+    std::vector<MenuItem>& items)
+{
+    if (ReadCustomizedMenuItems(
+        mainMenu.id,
+        items))
+    {
+        return true;
+    }
+
+    // Preserve menus created by earlier versions of FSR ReaMenu.
+    if (mainMenu.id == "midi" &&
+        ReadCustomizedMenuItems(
+            "fsr_reamenu_midi",
+            items))
+    {
+        Log(
+            "Using legacy customized menu section "
+            "[fsr_reamenu_midi]."
+        );
+
+        return true;
+    }
+
+    return false;
+}
+
+
+static void PopulateDirectMidiMenu(
+    HMENU menu,
+    const MainMenu& mainMenu)
+{
+    std::vector<MenuItem> configuredItems;
+
+    if (LoadCustomizedItems(
+        mainMenu,
+        configuredItems))
+    {
+        for (const MenuItem& item :
+            configuredItems)
+        {
+            InsertMenuItem(menu, item);
+        }
+
+        return;
+    }
+
+    PopulateMenu(menu, mainMenu);
+}
+
+
+static bool MenuIniChanged()
+{
+    std::string path =
+        GetMenuIniPath();
+
+    WIN32_FILE_ATTRIBUTE_DATA data = {};
+
+    bool exists =
+        !path.empty() &&
+        GetFileAttributesExA(
+            path.c_str(),
+            GetFileExInfoStandard,
+            &data
+        ) != FALSE;
+
+    bool changed =
+        !g_menuIniTimeInitialized ||
+        exists != g_menuIniExists;
+
+    if (exists &&
+        g_menuIniTimeInitialized &&
+        CompareFileTime(
+            &data.ftLastWriteTime,
+            &g_menuIniWriteTime
+        ) != 0)
+    {
+        changed = true;
+    }
+
+    g_menuIniExists = exists;
+
+    if (exists)
+        g_menuIniWriteTime = data.ftLastWriteTime;
+    else
+        g_menuIniWriteTime = {};
+
+    g_menuIniTimeInitialized = true;
+
+    return changed;
+}
+
+
 // ============================================================
 // Direct MIDI Editor menu-bar integration
 // ============================================================
@@ -1393,7 +1671,7 @@ static void InstallMenuInMidiEditor(
         return;
     }
 
-    PopulateMenu(submenu, mainMenu);
+    PopulateDirectMidiMenu(submenu, mainMenu);
 
     std::wstring wideName =
         UTF8ToWide(mainMenu.name);
@@ -1436,6 +1714,9 @@ static void InstallMenuInMidiEditor(
 
 static void InstallMenusInActiveMidiEditor()
 {
+    if (MenuIniChanged())
+        RemoveAllInstalledMenus();
+
     HWND midiEditor = MIDIEditor_GetActive();
 
     if (!midiEditor)
@@ -1511,13 +1792,33 @@ static void MenuHook(
 static bool RegisterMenus(
     reaper_plugin_info_t* rec)
 {
+    KbdSectionInfo* midiEditorSection =
+        SectionFromUniqueID(32060);
+
+    if (!midiEditorSection ||
+        !midiEditorSection->name)
+    {
+        Log(
+            "ERROR: REAPER did not expose the MIDI Editor "
+            "keyboard section (32060)."
+        );
+
+        return false;
+    }
+
+    Log(
+        std::string("Using MIDI Editor Customize section '") +
+        midiEditorSection->name +
+        "' (32060)."
+    );
+
     for (const MainMenu& mainMenu :
         g_menus)
     {
         if (!AddCustomizableMenu(
             mainMenu.id.c_str(),
             mainMenu.name.c_str(),
-            nullptr,
+            midiEditorSection->name,
             false))
         {
             Log(
