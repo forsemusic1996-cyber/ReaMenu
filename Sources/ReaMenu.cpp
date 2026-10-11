@@ -1,7 +1,7 @@
 #define REAPERAPI_MINIMAL
 #define REAPERAPI_WANT_GetResourcePath
 #define REAPERAPI_WANT_AddCustomizableMenu
-#define REAPERAPI_WANT_SectionFromUniqueID
+#define REAPERAPI_WANT_MIDIEditor_GetActive
 #define REAPERAPI_WANT_NamedCommandLookup
 #define REAPERAPI_IMPLEMENT
 
@@ -62,6 +62,17 @@ static reaper_plugin_info_t* g_rec = nullptr;
 
 // True only after hookcustommenu has been successfully registered.
 static bool g_hookRegistered = false;
+
+struct InstalledMidiMenu
+{
+    HWND editor = nullptr;
+    HMENU menuBar = nullptr;
+    HMENU submenu = nullptr;
+    std::string id;
+};
+
+static std::vector<InstalledMidiMenu> g_installedMidiMenus;
+static bool g_timerRegistered = false;
 
 
 // ============================================================
@@ -1267,6 +1278,187 @@ static void PopulateMenu(
 
 
 // ============================================================
+// Direct MIDI Editor menu-bar integration
+// ============================================================
+
+static bool HasSubmenu(
+    HMENU menuBar,
+    HMENU submenu)
+{
+    if (!menuBar || !submenu)
+        return false;
+
+    int count = GetMenuItemCount(menuBar);
+
+    for (int i = 0; i < count; ++i)
+    {
+        if (GetSubMenu(menuBar, i) == submenu)
+            return true;
+    }
+
+    return false;
+}
+
+
+static void RemoveInstalledMenu(
+    InstalledMidiMenu& installed)
+{
+    if (installed.menuBar && installed.submenu)
+    {
+        int count = GetMenuItemCount(installed.menuBar);
+
+        for (int i = 0; i < count; ++i)
+        {
+            if (GetSubMenu(installed.menuBar, i) == installed.submenu)
+            {
+                DeleteMenu(
+                    installed.menuBar,
+                    static_cast<UINT>(i),
+                    MF_BYPOSITION
+                );
+
+                if (installed.editor)
+                    DrawMenuBar(installed.editor);
+
+                break;
+            }
+        }
+
+        DestroyMenu(installed.submenu);
+    }
+
+    installed.editor = nullptr;
+    installed.menuBar = nullptr;
+    installed.submenu = nullptr;
+    installed.id.clear();
+}
+
+
+static void RemoveAllInstalledMenus()
+{
+    for (InstalledMidiMenu& installed :
+        g_installedMidiMenus)
+    {
+        RemoveInstalledMenu(installed);
+    }
+
+    g_installedMidiMenus.clear();
+}
+
+
+static void InstallMenuInMidiEditor(
+    HWND midiEditor,
+    const MainMenu& mainMenu)
+{
+    if (!midiEditor || !IsWindow(midiEditor))
+        return;
+
+    HMENU menuBar = GetMenu(midiEditor);
+
+    if (!menuBar)
+    {
+        Log(
+            "MIDI Editor window has no menu bar. HWND=" +
+            std::to_string(
+                reinterpret_cast<UINT_PTR>(midiEditor)
+            )
+        );
+
+        return;
+    }
+
+    for (const InstalledMidiMenu& installed :
+        g_installedMidiMenus)
+    {
+        if (installed.editor == midiEditor &&
+            installed.menuBar == menuBar &&
+            installed.id == mainMenu.id &&
+            installed.submenu &&
+            HasSubmenu(menuBar, installed.submenu))
+        {
+            return;
+        }
+    }
+
+    HMENU submenu = CreatePopupMenu();
+
+    if (!submenu)
+    {
+        Log(
+            "ERROR: CreatePopupMenu() failed for MIDI Editor menu '" +
+            mainMenu.name +
+            "'."
+        );
+
+        return;
+    }
+
+    PopulateMenu(submenu, mainMenu);
+
+    std::wstring wideName =
+        UTF8ToWide(mainMenu.name);
+
+    if (!AppendMenuW(
+        menuBar,
+        MF_POPUP,
+        reinterpret_cast<UINT_PTR>(submenu),
+        wideName.c_str()))
+    {
+        DestroyMenu(submenu);
+
+        Log(
+            "ERROR: AppendMenuW() failed for MIDI Editor menu '" +
+            mainMenu.name +
+            "'."
+        );
+
+        return;
+    }
+
+    DrawMenuBar(midiEditor);
+
+    InstalledMidiMenu installed;
+    installed.editor = midiEditor;
+    installed.menuBar = menuBar;
+    installed.submenu = submenu;
+    installed.id = mainMenu.id;
+    g_installedMidiMenus.push_back(installed);
+
+    Log(
+        "Installed MIDI Editor menu-bar item '" +
+        mainMenu.name +
+        "' (" +
+        mainMenu.id +
+        ")"
+    );
+}
+
+
+static void InstallMenusInActiveMidiEditor()
+{
+    HWND midiEditor = MIDIEditor_GetActive();
+
+    if (!midiEditor)
+        return;
+
+    for (const MainMenu& mainMenu :
+        g_menus)
+    {
+        InstallMenuInMidiEditor(
+            midiEditor,
+            mainMenu
+        );
+    }
+}
+
+
+static void MidiMenuTimer()
+{
+    InstallMenusInActiveMidiEditor();
+}
+
+
+// ============================================================
 // REAPER custom menu hook
 // ============================================================
 
@@ -1319,40 +1511,14 @@ static void MenuHook(
 static bool RegisterMenus(
     reaper_plugin_info_t* rec)
 {
-    // 32060 is REAPER's built-in MIDI Editor action section.
-    // Use the section object supplied by REAPER rather than guessing
-    // its display name, so this menu is registered for the MIDI Editor
-    // section and not for REAPER's global main section.
-    KbdSectionInfo* midiEditorSection =
-        SectionFromUniqueID(32060);
-
-    if (!midiEditorSection || !midiEditorSection->name)
-    {
-        Log(
-            "ERROR: REAPER did not expose the built-in MIDI Editor "
-            "section (32060)."
-        );
-
-        return false;
-    }
-
-    const char* midiEditorSectionName =
-        midiEditorSection->name;
-
-    Log(
-        std::string("Using MIDI Editor section: '") +
-        midiEditorSectionName +
-        "' (32060)."
-    );
-
     for (const MainMenu& mainMenu :
         g_menus)
     {
         if (!AddCustomizableMenu(
             mainMenu.id.c_str(),
             mainMenu.name.c_str(),
-            midiEditorSectionName,
-            true))
+            nullptr,
+            false))
         {
             Log(
                 "ERROR: AddCustomizableMenu() "
@@ -1365,7 +1531,7 @@ static bool RegisterMenus(
         }
 
         Log(
-            "Registered MIDI Editor menu '" +
+            "Registered customizable MIDI menu '" +
             mainMenu.name +
             "' (" +
             mainMenu.id +
@@ -1393,6 +1559,27 @@ static bool RegisterMenus(
         "hookcustommenu registered."
     );
 
+    g_rec = rec;
+
+    if (!rec->Register(
+        "timer",
+        reinterpret_cast<void*>(
+            MidiMenuTimer
+            )))
+    {
+        Log(
+            "ERROR: Unable to register MIDI Editor menu timer."
+        );
+
+        return false;
+    }
+
+    g_timerRegistered = true;
+
+    Log(
+        "MIDI Editor menu timer registered."
+    );
+
     return true;
 }
 
@@ -1416,6 +1603,20 @@ int REAPER_PLUGIN_ENTRYPOINT(
 
     if (!rec)
     {
+        RemoveAllInstalledMenus();
+
+        if (g_rec && g_timerRegistered)
+        {
+            g_rec->Register(
+                "-timer",
+                reinterpret_cast<void*>(
+                    MidiMenuTimer
+                    )
+            );
+        }
+
+        g_timerRegistered = false;
+
         if (g_rec && g_hookRegistered)
         {
             if (g_rec->Register(
@@ -1486,13 +1687,10 @@ int REAPER_PLUGIN_ENTRYPOINT(
 
     if (!RegisterMenus(rec))
     {
+        g_rec = nullptr;
         CoUninitialize();
         return 0;
     }
-
-    // Keep the registration structure so that the hook can
-    // be removed when REAPER unloads the extension.
-    g_rec = rec;
 
     CoUninitialize();
 
