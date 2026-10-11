@@ -1,6 +1,7 @@
 #define REAPERAPI_MINIMAL
 #define REAPERAPI_WANT_GetResourcePath
 #define REAPERAPI_WANT_AddCustomizableMenu
+#define REAPERAPI_WANT_SectionFromUniqueID
 #define REAPERAPI_WANT_NamedCommandLookup
 #define REAPERAPI_IMPLEMENT
 
@@ -1308,13 +1309,39 @@ static void MenuHook(
 static bool RegisterMenus(
     reaper_plugin_info_t* rec)
 {
+    // 32060 is REAPER's built-in MIDI Editor action section.
+    // Use the section object supplied by REAPER rather than guessing
+    // its display name, so this menu is registered for the MIDI Editor
+    // section and not for REAPER's global main section.
+    KbdSectionInfo* midiEditorSection =
+        SectionFromUniqueID(32060);
+
+    if (!midiEditorSection || !midiEditorSection->name)
+    {
+        Log(
+            "ERROR: REAPER did not expose the built-in MIDI Editor "
+            "section (32060)."
+        );
+
+        return false;
+    }
+
+    const char* midiEditorSectionName =
+        midiEditorSection->name;
+
+    Log(
+        std::string("Using MIDI Editor section: '") +
+        midiEditorSectionName +
+        "' (32060)."
+    );
+
     for (const MainMenu& mainMenu :
         g_menus)
     {
         if (!AddCustomizableMenu(
             mainMenu.id.c_str(),
             mainMenu.name.c_str(),
-            "MIDI Editor",
+            midiEditorSectionName,
             true))
         {
             Log(
@@ -1328,7 +1355,7 @@ static bool RegisterMenus(
         }
 
         Log(
-            "Registered main menu '" +
+            "Registered MIDI Editor menu '" +
             mainMenu.name +
             "' (" +
             mainMenu.id +
