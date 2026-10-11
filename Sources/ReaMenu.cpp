@@ -1885,7 +1885,7 @@ int REAPER_PLUGIN_ENTRYPOINT(
 
     if (!rec)
     {
-undefined        if (g_rec && g_hookRegistered)
+        if (g_rec && g_hookRegistered)
         {
             if (g_rec->Register(
                 "-hookcustommenu",
