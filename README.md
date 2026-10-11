@@ -7,8 +7,9 @@ This is the MIDI Editor counterpart of [ReaCustomMenu](https://github.com/danloa
 - menus are described in `ReaMenu.xml`;
 - actions can use numeric REAPER command IDs or named IDs such as `_RS...`;
 - nested submenus and separators are supported;
-- the menu is registered through `AddCustomizableMenu` and populated through `hookcustommenu`;
-- MIDI Editor action context is selected with the `MIDI Editor` keyboard section.
+- the menu remains available to REAPER's Customize Menus editor through `AddCustomizableMenu`;
+- the top-level item is inserted into the real Windows menu bar of the active MIDI Editor;
+- menu items are populated from the same XML structure as ReaCustomMenu and use REAPER action IDs.
 
 ## Installation
 
@@ -34,6 +35,11 @@ Edit `ReaMenu.xml` while REAPER is closed, or replace it and restart REAPER. The
 ```
 
 Replace the example commands with the IDs from your MIDI Editor action list when customizing the menu.
+
+The extension uses REAPER's `MIDIEditor_GetActive()` API and the active editor's
+native menu handle. This is required because `AddCustomizableMenu()` can register
+a menu for REAPER's menu editor, but its keyboard-section parameter does not attach
+a new top-level item to the built-in MIDI Editor menu bar.
 
 ## Build
 
