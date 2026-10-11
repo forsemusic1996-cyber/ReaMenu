@@ -1315,7 +1315,7 @@ static bool RegisterMenus(
             mainMenu.id.c_str(),
             mainMenu.name.c_str(),
             "MIDI Editor",
-            false))
+            true))
         {
             Log(
                 "ERROR: AddCustomizableMenu() "
