@@ -1819,7 +1819,7 @@ static bool RegisterMenus(
             mainMenu.id.c_str(),
             mainMenu.name.c_str(),
             midiEditorSection->name,
-            false))
+            true))
         {
             Log(
                 "ERROR: AddCustomizableMenu() "
@@ -1862,25 +1862,6 @@ static bool RegisterMenus(
 
     g_rec = rec;
 
-    if (!rec->Register(
-        "timer",
-        reinterpret_cast<void*>(
-            MidiMenuTimer
-            )))
-    {
-        Log(
-            "ERROR: Unable to register MIDI Editor menu timer."
-        );
-
-        return false;
-    }
-
-    g_timerRegistered = true;
-
-    Log(
-        "MIDI Editor menu timer registered."
-    );
-
     return true;
 }
 
@@ -1904,21 +1885,7 @@ int REAPER_PLUGIN_ENTRYPOINT(
 
     if (!rec)
     {
-        RemoveAllInstalledMenus();
-
-        if (g_rec && g_timerRegistered)
-        {
-            g_rec->Register(
-                "-timer",
-                reinterpret_cast<void*>(
-                    MidiMenuTimer
-                    )
-            );
-        }
-
-        g_timerRegistered = false;
-
-        if (g_rec && g_hookRegistered)
+undefined        if (g_rec && g_hookRegistered)
         {
             if (g_rec->Register(
                 "-hookcustommenu",
