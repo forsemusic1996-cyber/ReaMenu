@@ -81,6 +81,15 @@ static std::string GetLogPath()
 }
 
 
+static void ResetLog()
+{
+    std::ofstream file(
+        GetLogPath(),
+        std::ios::out | std::ios::trunc
+    );
+}
+
+
 static void Log(const std::string& text)
 {
     std::ofstream file(
@@ -659,6 +668,7 @@ static bool ParseMainMenu(
 static bool LoadConfiguration()
 {
     g_menus.clear();
+    ResetLog();
 
     const char* resourcePath =
         GetResourcePath();
