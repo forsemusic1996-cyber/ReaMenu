@@ -1,0 +1,46 @@
+name: Build FSR ReaMenu
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build x64 Release with MSVC
+        run: msbuild Sources/ReaMenu.vcxproj /m /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143
+
+      - name: Validate artifact
+        shell: pwsh
+        run: |
+          $dlls = @(Get-ChildItem -Path . -Recurse -Filter reaper_ReaMenu.dll -File)
+          if ($dlls.Count -ne 1) { throw "Expected one DLL, found $($dlls.Count)" }
+          $dll = $dlls[0].FullName
+          $bytes = $dlls[0].Length
+          Write-Host "DLL size: $bytes bytes"
+          if ($bytes -lt 50000) { throw "DLL is unexpectedly small: $bytes bytes" }
+          if ($bytes -gt 5000000) { throw "DLL is unexpectedly large: $bytes bytes" }
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          $dll = Get-ChildItem -Path . -Recurse -Filter reaper_ReaMenu.dll -File | Select-Object -First 1
+          Copy-Item $dll.FullName out/
+          Copy-Item ReaMenu.xml out/
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FSR-ReaMenu-windows-x64
+          path: out/

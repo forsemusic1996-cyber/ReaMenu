@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FSR ReaMenu configuration.
+  Commands are MIDI Editor action IDs or named command IDs such as _RS....
+  Supported elements: action, menu, separator.
+-->
+<menus>
+  <mainmenu id="fsr_reamenu_midi_editor" name="FSR ReaMenu">
+    <action command="40142" name="Insert note" />
+    <action command="40143" name="Delete note" />
+    <separator />
+    <menu name="MIDI Editor tools">
+      <action command="40001" name="Edit: Select all" />
+      <action command="40002" name="Edit: Unselect all" />
+    </menu>
+  </mainmenu>
+</menus>
