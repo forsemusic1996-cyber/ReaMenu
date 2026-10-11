@@ -75,6 +75,14 @@ struct InstalledMidiMenu
 
 static std::vector<InstalledMidiMenu> g_installedMidiMenus;
 static bool g_timerRegistered = false;
+
+// Cached state keeps the timer idle unless the active MIDI Editor or
+// its menu bar changes.
+static HWND g_lastMidiEditor = nullptr;
+static HMENU g_lastMidiMenuBar = nullptr;
+static ULONGLONG g_nextMidiEditorCheck = 0;
+static ULONGLONG g_nextMenuIniCheck = 0;
+
 static FILETIME g_menuIniWriteTime = {};
 static bool g_menuIniExists = false;
 static bool g_menuIniTimeInitialized = false;
@@ -1714,13 +1722,43 @@ static void InstallMenuInMidiEditor(
 
 static void InstallMenusInActiveMidiEditor()
 {
-    if (MenuIniChanged())
-        RemoveAllInstalledMenus();
-
     HWND midiEditor = MIDIEditor_GetActive();
 
-    if (!midiEditor)
+    if (!midiEditor || !IsWindow(midiEditor))
+    {
+        g_lastMidiEditor = nullptr;
+        g_lastMidiMenuBar = nullptr;
         return;
+    }
+
+    HMENU menuBar = GetMenu(midiEditor);
+
+    if (!menuBar)
+        return;
+
+    const bool editorChanged =
+        midiEditor != g_lastMidiEditor ||
+        menuBar != g_lastMidiMenuBar;
+
+    const ULONGLONG now = GetTickCount64();
+    bool menuConfigurationChanged = false;
+
+    // Check the menu configuration at most once per second. XML is not
+    // touched here; it is loaded only once when the extension starts.
+    if (now >= g_nextMenuIniCheck)
+    {
+        g_nextMenuIniCheck = now + 1000;
+        menuConfigurationChanged = MenuIniChanged();
+    }
+
+    if (!editorChanged && !menuConfigurationChanged)
+        return;
+
+    if (menuConfigurationChanged)
+        RemoveAllInstalledMenus();
+
+    g_lastMidiEditor = midiEditor;
+    g_lastMidiMenuBar = menuBar;
 
     for (const MainMenu& mainMenu :
         g_menus)
@@ -1735,6 +1773,16 @@ static void InstallMenusInActiveMidiEditor()
 
 static void MidiMenuTimer()
 {
+    const ULONGLONG now = GetTickCount64();
+
+    // REAPER invokes extension timers frequently. Do actual work only
+    // five times per second, which is enough to catch a newly opened
+    // MIDI Editor without polling XML or rebuilding menus.
+    if (now < g_nextMidiEditorCheck)
+        return;
+
+    g_nextMidiEditorCheck = now + 200;
+
     InstallMenusInActiveMidiEditor();
 }
 
@@ -1819,7 +1867,7 @@ static bool RegisterMenus(
             mainMenu.id.c_str(),
             mainMenu.name.c_str(),
             midiEditorSection->name,
-            true))
+            false))
         {
             Log(
                 "ERROR: AddCustomizableMenu() "
@@ -1860,6 +1908,32 @@ static bool RegisterMenus(
         "hookcustommenu registered."
     );
 
+    if (!rec->Register(
+        "timer",
+        reinterpret_cast<void*>(
+            MidiMenuTimer
+            )))
+    {
+        Log(
+            "ERROR: Unable to register MIDI Editor timer."
+        );
+
+        rec->Register(
+            "-hookcustommenu",
+            reinterpret_cast<void*>(
+                MenuHook
+                )
+        );
+        g_hookRegistered = false;
+        return false;
+    }
+
+    g_timerRegistered = true;
+
+    Log(
+        "Optimized MIDI Editor timer registered."
+    );
+
     g_rec = rec;
 
     return true;
@@ -1885,6 +1959,24 @@ int REAPER_PLUGIN_ENTRYPOINT(
 
     if (!rec)
     {
+        RemoveAllInstalledMenus();
+
+        if (g_rec && g_timerRegistered)
+        {
+            g_rec->Register(
+                "-timer",
+                reinterpret_cast<void*>(
+                    MidiMenuTimer
+                    )
+            );
+        }
+
+        g_timerRegistered = false;
+        g_lastMidiEditor = nullptr;
+        g_lastMidiMenuBar = nullptr;
+        g_nextMidiEditorCheck = 0;
+        g_nextMenuIniCheck = 0;
+
         if (g_rec && g_hookRegistered)
         {
             if (g_rec->Register(
